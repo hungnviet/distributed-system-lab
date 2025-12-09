@@ -406,7 +406,11 @@ System Status for {self.hostname}:
   Disk Usage: {disk.percent}%
   Platform: {platform.platform()}
   Config: interval={config.get('interval')}s, metrics={config.get('metrics')}
-  Plugins: {len(self.plugin_manager.plugins)} loaded """
+  Plugins: {len(self.plugin_manager.plugins)} loaded
+"""
+        return status
+
+    def generate_monitoring_stream(self, request_iterator):
         while self.running:
             try:
                 config = self.get_config()
