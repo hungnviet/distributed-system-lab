@@ -90,6 +90,8 @@ echo "Connect agents to: $NODE1_IP:50052 and $NODE1_IP:2379"
 ### Agent Nodes
 
 ```bash
-SERVER_IP="192.168.1.100"
+SERVER_IP="192.168.1.100" ## thay cái này thành địa chỉ IP của server
 ./start_agent.sh $SERVER_IP:50052 my-agent $SERVER_IP
 ```
+
+IST-5G : 192.168.31.150
