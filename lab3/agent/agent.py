@@ -38,8 +38,6 @@ logger = logging.getLogger(__name__)
 
 
 class RWLock:
-    """Reader-Writer Lock for thread-safe configuration access"""
-
     def __init__(self):
         self._readers = 0
         self._writers = 0
@@ -47,7 +45,6 @@ class RWLock:
         self._write_ready = threading.Condition(threading.RLock())
 
     def acquire_read(self):
-        """Acquire read lock"""
         self._read_ready.acquire()
         try:
             while self._writers > 0:
@@ -57,7 +54,6 @@ class RWLock:
             self._read_ready.release()
 
     def release_read(self):
-        """Release read lock"""
         self._read_ready.acquire()
         try:
             self._readers -= 1
@@ -67,7 +63,6 @@ class RWLock:
             self._read_ready.release()
 
     def acquire_write(self):
-        """Acquire write lock"""
         self._write_ready.acquire()
         self._writers += 1
         self._write_ready.release()
@@ -77,7 +72,6 @@ class RWLock:
             self._read_ready.wait()
 
     def release_write(self):
-        """Release write lock"""
         self._writers -= 1
         self._read_ready.notifyAll()
         self._read_ready.release()
@@ -87,8 +81,6 @@ class RWLock:
 
 
 class MonitoringAgent:
-    """Monitoring Agent with etcd integration"""
-
     def __init__(self,
                  server_address='localhost:50052',
                  client_id=None,
@@ -100,25 +92,21 @@ class MonitoringAgent:
         self.hostname = platform.node()
         self.client_id = client_id or f"{self.hostname}-{int(time.time())}"
 
-        # etcd configuration
         self.etcd_host = etcd_host
         self.etcd_port = etcd_port
         self.lease_ttl = lease_ttl
 
-        # Configuration with thread-safe access
         self.config = {
             'interval': 5,
             'metrics': ['cpu', 'memory', 'disk', 'network']
         }
         self.config_lock = RWLock()
 
-        # Agent state
         self.running = True
         self.etcd = None
         self.heartbeat_thread = None
         self.config_watch_id = None
 
-        # Disk/Network I/O counters for calculating rates
         self.last_disk_io = None
         self.last_net_io = None
         self.last_io_time = None
@@ -129,7 +117,6 @@ class MonitoringAgent:
         logger.info(f"etcd: {self.etcd_host}:{self.etcd_port}")
 
     def connect_etcd(self):
-        """Connect to etcd server"""
         try:
             self.etcd = etcd3.client(host=self.etcd_host, port=self.etcd_port)
             logger.info("✓ Connected to etcd")
@@ -139,7 +126,6 @@ class MonitoringAgent:
             return False
 
     def get_config(self) -> Dict[str, Any]:
-        """Thread-safe config read"""
         self.config_lock.acquire_read()
         try:
             return self.config.copy()
@@ -147,7 +133,6 @@ class MonitoringAgent:
             self.config_lock.release_read()
 
     def update_config(self, new_config: Dict[str, Any]):
-        """Thread-safe config write"""
         self.config_lock.acquire_write()
         try:
             self.config = new_config
@@ -156,7 +141,6 @@ class MonitoringAgent:
             self.config_lock.release_write()
 
     def send_heartbeat(self):
-        """Send heartbeat to etcd with lease/TTL"""
         heartbeat_key = f"/monitor/heartbeat/{self.hostname}"
         lease = self.etcd.lease(self.lease_ttl)
 
@@ -193,7 +177,6 @@ class MonitoringAgent:
                 pass
 
     def watch_config(self, watch_response):
-        """Callback for etcd config watch"""
         for event in watch_response.events:
             if isinstance(event, etcd3.events.PutEvent):
                 try:
@@ -204,7 +187,6 @@ class MonitoringAgent:
                     logger.error(f"Error parsing config: {e}")
 
     def load_and_watch_config(self):
-        """Load initial config from etcd and watch for changes"""
         config_key = f"/monitor/config/{self.hostname}"
 
         try:
@@ -231,7 +213,6 @@ class MonitoringAgent:
             logger.error(f"Error loading config from etcd: {e}")
 
     def collect_metrics(self) -> List[monitoring_pb2.MonitoringData]:
-        """Collect system metrics based on configuration"""
         config = self.get_config()
         metrics_to_collect = config.get('metrics', ['cpu', 'memory'])
 
@@ -279,7 +260,6 @@ class MonitoringAgent:
         return metrics
 
     def _create_metric(self, metric_name: str, value: float, timestamp: int):
-        """Helper to create a metric message"""
         return monitoring_pb2.MonitoringData(
             timestamp=timestamp,
             hostname=self.hostname,
@@ -289,7 +269,6 @@ class MonitoringAgent:
         )
 
     def _get_disk_io_rate(self) -> Dict[str, float]:
-        """Calculate disk I/O rate (bytes/sec)"""
         try:
             current_io = psutil.disk_io_counters()
             current_time = time.time()
@@ -315,7 +294,6 @@ class MonitoringAgent:
             return None
 
     def _get_network_io_rate(self) -> Dict[str, float]:
-        """Calculate network I/O rate (bytes/sec)"""
         try:
             current_io = psutil.net_io_counters()
             current_time = time.time()
@@ -341,7 +319,6 @@ class MonitoringAgent:
             return None
 
     def execute_command(self, command):
-        """Execute command received from server"""
         logger.info(f"📥 Received command: {command.command_type}")
 
         try:
@@ -402,16 +379,13 @@ System Status for {self.hostname}:
                 time.sleep(1)
 
     def start(self):
-        """Start the monitoring agent"""
-        # Connect to etcd
+
         if not self.connect_etcd():
             logger.error("Cannot start without etcd connection")
             return
 
-        # Load configuration and watch for changes
         self.load_and_watch_config()
 
-        # Start heartbeat thread
         self.heartbeat_thread = threading.Thread(
             target=self.send_heartbeat,
             daemon=True
@@ -419,7 +393,6 @@ System Status for {self.hostname}:
         self.heartbeat_thread.start()
         logger.info("✓ Heartbeat thread started")
 
-        # Connect to gRPC server
         logger.info(f"Connecting to gRPC server at {self.server_address}...")
 
         try:
@@ -461,7 +434,6 @@ System Status for {self.hostname}:
             self.cleanup()
 
     def cleanup(self):
-        """Cleanup resources"""
         self.running = False
 
         if self.config_watch_id and self.etcd:
@@ -477,8 +449,7 @@ System Status for {self.hostname}:
 
 
 def main():
-    """Main entry point"""
-    # Parse command line arguments
+    # default là localhost nếu ko nhận được thông số từ cmd start client 
     server_address = 'localhost:50052'
     client_id = None
     etcd_host = 'localhost'

@@ -1,14 +1,3 @@
-#!/usr/bin/env python3
-"""
-Lab 3 Monitoring Server with etcd Integration
-
-Features:
-- Monitors heartbeats from all agents via etcd
-- Maintains global view of system health (alive/dead nodes)
-- Manages and pushes configuration to agents via etcd
-- Receives monitoring data from agents via gRPC
-"""
-
 import grpc
 from concurrent import futures
 import time
@@ -36,7 +25,6 @@ logger = logging.getLogger(__name__)
 
 
 class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
-    """Monitoring server with etcd heartbeat monitoring"""
 
     def __init__(self,
                  result_file='result.txt',
@@ -72,13 +60,11 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
         self._start_health_display()
 
     def _init_result_file(self):
-        """Initialize result file"""
         with open(self.result_file, 'w') as f:
             f.write(f"=== Monitoring Server Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n\n")
         logger.info(f"Writing monitoring data to: {self.result_file}")
 
     def _connect_etcd(self):
-        """Connect to etcd"""
         try:
             self.etcd = etcd3.client(host=self.etcd_host, port=self.etcd_port)
             logger.info(f"✓ Connected to etcd at {self.etcd_host}:{self.etcd_port}")
@@ -87,7 +73,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
             raise
 
     def _start_heartbeat_monitor(self):
-        """Start monitoring heartbeats from etcd"""
         try:
             self.heartbeat_watch_id = self.etcd.add_watch_prefix_callback(
                 "/monitor/heartbeat/",
@@ -98,7 +83,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
             logger.error(f"Failed to start heartbeat monitor: {e}")
 
     def _on_heartbeat_event(self, watch_response):
-        """Callback for heartbeat events from etcd"""
         for event in watch_response.events:
             key = event.key.decode('utf-8')
             hostname = key.split('/')[-1]
@@ -125,17 +109,15 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
                     logger.warning(f"[-] Node {hostname} dead (key removed)")
 
     def _start_health_display(self):
-        """Start thread to periodically display system health"""
         def display_health():
             while True:
-                time.sleep(15)  # Display every 15 seconds
+                time.sleep(60)  # hiển thị mỗi 1p show hearth beat
                 self.display_system_health()
 
         health_thread = threading.Thread(target=display_health, daemon=True)
         health_thread.start()
 
     def display_system_health(self):
-        """Display global view of system health"""
         with self.health_lock:
             if not self.node_health:
                 return
@@ -169,7 +151,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
         command_thread.start()
 
     def _command_input_loop(self):
-        """Background thread to accept commands from console"""
         logger.info("📝 Command input ready. Type 'help' for available commands.")
 
         while True:
@@ -266,7 +247,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
             print("="*60)
 
     def _update_config(self, cmd_input):
-        """Update agent configuration in etcd"""
         try:
             parts = cmd_input.split(' ', 2)
             if len(parts) < 3:
@@ -293,7 +273,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
             print(f"❌ Error updating config: {e}")
 
     def _parse_and_send_command(self, cmd_input):
-        """Parse and send command to client(s)"""
         parts = cmd_input.split(' ', 2)
 
         if len(parts) < 3:
@@ -328,15 +307,10 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
                 print(f"✓ Command '{command_type}' queued for {target}")
 
     def MonitorStream(self, request_iterator, context):
-        """
-        Bidirectional streaming RPC
-        Receives monitoring data from clients and sends commands back
-        """
         client_id = None
         hostname = None
 
         def response_generator():
-            """Generator for sending commands back to client"""
             nonlocal client_id
 
             try:
@@ -396,7 +370,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
 
 
 def serve(port=50052, etcd_host='localhost', etcd_port=2379):
-    """Start the monitoring server"""
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     monitoring_service = MonitoringServer(
         etcd_host=etcd_host,
