@@ -10,21 +10,16 @@ import importlib
 from datetime import datetime
 from typing import Dict, List, Any
 
-# Import etcd client
 import etcd3
 import etcd3.events
 
-# Add parent directory to path for imports
 sys.path.insert(0, '..')
 
-# Import generated protobuf classes
 import monitoring_pb2
 import monitoring_pb2_grpc
 
-# Import plugin base
 from plugins.base import BasePlugin
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -33,7 +28,6 @@ logger = logging.getLogger(__name__)
 
 
 class RWLock:
-    """Read-Write Lock for thread-safe configuration access"""
     def __init__(self):
         self._readers = 0
         self._writers = 0
@@ -77,20 +71,11 @@ class RWLock:
 
 
 class PluginManager:
-    """Manages dynamic loading and execution of plugins"""
-
     def __init__(self):
         self.plugins = []
         self.plugin_configs = {}
 
     def load_plugins(self, plugin_list: List[str], plugin_configs: Dict[str, Any] = None):
-        """
-        Load plugins from configuration
-        Args:
-            plugin_list: List of plugin class paths (e.g., ["plugins.duplicate_filter.DuplicateFilterPlugin"])
-            plugin_configs: Dictionary of plugin-specific configurations
-        """
-        # Finalize existing plugins
         self.finalize_all()
         self.plugins = []
 
@@ -102,7 +87,6 @@ class PluginManager:
                 if plugin_cls:
                     plugin = plugin_cls()
 
-                    # Get plugin-specific config
                     plugin_name = plugin_cls.__name__
                     plugin_config = self.plugin_configs.get(plugin_name, {})
 
@@ -115,13 +99,6 @@ class PluginManager:
                 logger.error(f"Error loading plugin {cls_path}: {e}")
 
     def _resolve_class(self, cls_path: str):
-        """
-        Resolve plugin class from module path
-        Args:
-            cls_path: Full class path (e.g., "plugins.duplicate_filter.DuplicateFilterPlugin")
-        Returns:
-            Plugin class or None
-        """
         try:
             module_name, class_name = cls_path.rsplit(".", 1)
             module = importlib.import_module(module_name)
@@ -131,13 +108,6 @@ class PluginManager:
             return None
 
     def execute(self, data: Any) -> Any:
-        """
-        Execute all loaded plugins in sequence
-        Args:
-            data: Input data to process
-        Returns:
-            Processed data after all plugins
-        """
         result = data
         for plugin in self.plugins:
             try:
@@ -147,7 +117,6 @@ class PluginManager:
         return result
 
     def finalize_all(self):
-        """Finalize all plugins"""
         for plugin in self.plugins:
             try:
                 plugin.finalize()
@@ -171,15 +140,13 @@ class MonitoringAgent:
         self.etcd_port = etcd_port
         self.lease_ttl = lease_ttl
 
-        # Default configuration
         self.config = {
             'interval': 5,
             'metrics': ['cpu', 'memory', 'disk', 'network'],
-            'plugins': []  # Plugin configuration
+            'plugins': []
         }
         self.config_lock = RWLock()
 
-        # Plugin manager
         self.plugin_manager = PluginManager()
 
         self.running = True
@@ -223,7 +190,6 @@ class MonitoringAgent:
             self.config = new_config
             logger.info(f"✓ Configuration updated: {self.config}")
 
-            # Reload plugins if plugin list OR plugin configs changed
             if old_plugins != new_plugins or old_plugin_configs != new_plugin_configs:
                 logger.info("🔌 Plugin configuration changed, reloading plugins...")
                 self.plugin_manager.load_plugins(new_plugins, new_plugin_configs)
@@ -279,19 +245,16 @@ class MonitoringAgent:
         config_key = f"/monitor/config/{self.hostname}"
 
         try:
-            # Load initial configuration
             value, _ = self.etcd.get(config_key)
             if value:
                 initial_config = json.loads(value.decode('utf-8'))
                 self.update_config(initial_config)
                 logger.info(f"✓ Loaded initial config from etcd: {initial_config}")
             else:
-                # Put default config to etcd if not exists
                 default_config = self.get_config()
                 self.etcd.put(config_key, json.dumps(default_config))
                 logger.info(f"✓ Created default config in etcd: {default_config}")
 
-            # Watch for configuration changes
             self.config_watch_id = self.etcd.add_watch_callback(
                 config_key,
                 self.watch_config
@@ -339,7 +302,7 @@ class MonitoringAgent:
                             metrics.append(self._create_metric('net_in', net_metrics['in'], timestamp))
                         elif metric_name == 'net out':
                             metrics.append(self._create_metric('net_out', net_metrics['out'], timestamp))
-                        else:  # 'network'
+                        else:
                             metrics.append(self._create_metric('net_in', net_metrics['in'], timestamp))
                             metrics.append(self._create_metric('net_out', net_metrics['out'], timestamp))
 
@@ -431,7 +394,6 @@ class MonitoringAgent:
             return False, str(e)
 
     def _get_status(self):
-        """Get system status"""
         config = self.get_config()
         cpu = psutil.cpu_percent(interval=0.5)
         memory = psutil.virtual_memory()
@@ -444,24 +406,16 @@ System Status for {self.hostname}:
   Disk Usage: {disk.percent}%
   Platform: {platform.platform()}
   Config: interval={config.get('interval')}s, metrics={config.get('metrics')}
-  Plugins: {len(self.plugin_manager.plugins)} loaded
-"""
-        return status.strip()
-
-    def generate_monitoring_stream(self, response_iterator):
-        """Generator that yields monitoring data periodically"""
+  Plugins: {len(self.plugin_manager.plugins)} loaded """
         while self.running:
             try:
                 config = self.get_config()
                 interval = config.get('interval', 5)
 
-                # Collect metrics
                 metrics = self.collect_metrics()
 
-                # Apply plugins to metrics
                 processed_metrics = self.plugin_manager.execute(metrics)
 
-                # Send processed metrics
                 if processed_metrics:
                     for metric in processed_metrics:
                         yield metric
@@ -508,12 +462,10 @@ System Status for {self.hostname}:
             print("="*60)
             print("\nPress Ctrl+C to stop\n")
 
-            # Start bidirectional streaming
             response_iterator = stub.MonitorStream(
                 self.generate_monitoring_stream(None)
             )
 
-            # Listen for commands from server
             for command in response_iterator:
                 success, output = self.execute_command(command)
                 logger.info(f"Command output: {output}")
@@ -531,7 +483,6 @@ System Status for {self.hostname}:
     def cleanup(self):
         self.running = False
 
-        # Finalize plugins
         self.plugin_manager.finalize_all()
 
         if self.config_watch_id and self.etcd:
@@ -570,3 +521,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

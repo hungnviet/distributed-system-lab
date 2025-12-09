@@ -1,14 +1,4 @@
 #!/usr/bin/env python3
-"""
-Lab 4 Analysis Application
-
-Features:
-- Consumes monitoring data from Kafka
-- Prints data to stdout
-- Sends commands to Kafka (forwarded to agents by gRPC server)
-- Interactive command interface
-"""
-
 import json
 import logging
 import threading
@@ -19,7 +9,6 @@ from collections import defaultdict
 from kafka import KafkaConsumer, KafkaProducer
 from kafka.errors import KafkaError
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -28,11 +17,6 @@ logger = logging.getLogger(__name__)
 
 
 class AnalysisApplication:
-    """
-    Analysis application that consumes monitoring data from Kafka
-    and can send commands back to agents
-    """
-
     def __init__(self, kafka_bootstrap_servers='localhost:9092'):
         self.kafka_bootstrap_servers = kafka_bootstrap_servers
         self.kafka_topics = {
@@ -44,7 +28,6 @@ class AnalysisApplication:
         self.producer = None
         self.running = True
 
-        # Statistics
         self.stats = defaultdict(lambda: defaultdict(list))
         self.message_count = 0
         self.stats_lock = threading.Lock()
@@ -52,9 +35,7 @@ class AnalysisApplication:
         self._connect_kafka()
 
     def _connect_kafka(self):
-        """Connect to Kafka"""
         try:
-            # Create consumer for monitoring data
             self.consumer = KafkaConsumer(
                 self.kafka_topics['data'],
                 bootstrap_servers=self.kafka_bootstrap_servers,
@@ -65,7 +46,6 @@ class AnalysisApplication:
             )
             logger.info(f"✓ Kafka consumer connected to topic: {self.kafka_topics['data']}")
 
-            # Create producer for commands
             self.producer = KafkaProducer(
                 bootstrap_servers=self.kafka_bootstrap_servers,
                 value_serializer=lambda v: json.dumps(v).encode('utf-8'),
@@ -79,7 +59,6 @@ class AnalysisApplication:
             raise
 
     def consume_data(self):
-        """Consume monitoring data from Kafka and print to stdout"""
         logger.info(f"📊 Starting data consumption from Kafka...")
 
         try:
@@ -91,16 +70,14 @@ class AnalysisApplication:
                     data = message.value
                     self.message_count += 1
 
-                    # Print to stdout
                     timestamp = datetime.fromtimestamp(data['timestamp'])
                     print(f"\n[{timestamp.strftime('%Y-%m-%d %H:%M:%S')}] "
-                          f"Message #{self.message_count}")
+                          f"Message
                     print(f"  Client: {data['client_id']}")
                     print(f"  Hostname: {data['hostname']}")
                     print(f"  Metric: {data['metric']}")
                     print(f"  Value: {data['value']:.2f}")
 
-                    # Update statistics
                     with self.stats_lock:
                         client_id = data['client_id']
                         metric = data['metric']
@@ -117,13 +94,6 @@ class AnalysisApplication:
             logger.info("Data consumer stopped")
 
     def send_command(self, target: str, command_type: str, command_data: str = ""):
-        """
-        Send command to Kafka (will be forwarded to agents by gRPC server)
-        Args:
-            target: Target client ID or 'all'
-            command_type: Type of command (e.g., 'status', 'get_config')
-            command_data: Additional command data
-        """
         try:
             command = {
                 'command_id': f"analysis_cmd_{int(time.time())}",
@@ -147,7 +117,6 @@ class AnalysisApplication:
             print(f"\n❌ Error: {e}")
 
     def show_statistics(self):
-        """Show aggregated statistics"""
         with self.stats_lock:
             if not self.stats:
                 print("\n📊 No statistics available yet.")
@@ -178,7 +147,6 @@ class AnalysisApplication:
             print("="*70)
 
     def command_input_loop(self):
-        """Interactive command input"""
         print("\n" + "="*60)
         print("  Analysis Application - Command Interface")
         print("="*60)
@@ -231,7 +199,6 @@ class AnalysisApplication:
                 logger.error(f"Error processing command: {e}")
 
     def _show_help(self):
-        """Show help message"""
         print("\n" + "="*60)
         print("Available Commands:")
         print("="*60)
@@ -248,7 +215,6 @@ class AnalysisApplication:
         print("="*60)
 
     def start(self):
-        """Start the analysis application"""
         print("\n" + "="*60)
         print("  🔍 Lab 4 Analysis Application")
         print("="*60)
@@ -258,12 +224,10 @@ class AnalysisApplication:
         print(f"  Status: Active")
         print("="*60)
 
-        # Start consumer thread
         consumer_thread = threading.Thread(target=self.consume_data, daemon=True)
         consumer_thread.start()
         logger.info("✓ Consumer thread started")
 
-        # Run command input loop in main thread
         try:
             self.command_input_loop()
         except Exception as e:
@@ -272,7 +236,6 @@ class AnalysisApplication:
             self.cleanup()
 
     def cleanup(self):
-        """Cleanup resources"""
         self.running = False
 
         if self.consumer:
@@ -308,3 +271,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

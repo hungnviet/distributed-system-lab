@@ -78,6 +78,8 @@ Server> config $(hostname) {"interval": 2, "metrics": ["cpu", "memory"], "plugin
 
 config MacBook-Pro-2.local {"interval": 2, "metrics": ["cpu", "memory"], "plugins": ["plugins.threshold_alert.ThresholdAlertPlugin"], "plugin_configs": {"ThresholdAlertPlugin": {"cpu": 70, "memory": 80}}}
 
+config MiWiFi-R3-srv {"interval": 2, "metrics": ["cpu", "memory"], "plugins": ["plugins.threshold_alert.ThresholdAlertPlugin"], "plugin_configs": {"ThresholdAlertPlugin": {"cpu": 0, "memory": 40}}}
+
 The agent will now alert when CPU > 50% or Memory > 60%
 
 ---

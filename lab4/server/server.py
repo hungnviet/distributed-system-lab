@@ -11,15 +11,12 @@ from kafka import KafkaProducer, KafkaConsumer
 from kafka.errors import KafkaError
 import sys
 
-# Import etcd client
 import etcd3
 import etcd3.events
 
-# Import generated protobuf classes
 import monitoring_pb2
 import monitoring_pb2_grpc
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -35,18 +32,15 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
                  etcd_port=2379,
                  kafka_bootstrap_servers='localhost:9092'):
 
-        # gRPC client management
         self.clients = {}
         self.client_data = defaultdict(list)
         self.command_queue = defaultdict(list)
         self.lock = threading.Lock()
 
-        # etcd configuration
         self.etcd_host = etcd_host
         self.etcd_port = etcd_port
         self.etcd = None
 
-        # Kafka configuration
         self.kafka_bootstrap_servers = kafka_bootstrap_servers
         self.kafka_producer = None
         self.kafka_consumer = None
@@ -55,17 +49,13 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
             'commands': 'monitoring-commands'
         }
 
-        # Node health tracking
         self.node_health = {}
         self.health_lock = threading.Lock()
 
-        # Result file
         self.result_file = result_file
 
-        # Watch IDs
         self.heartbeat_watch_id = None
 
-        # Initialize
         self._init_result_file()
         self._connect_etcd()
         self._connect_kafka()
@@ -88,9 +78,7 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
             raise
 
     def _connect_kafka(self):
-        """Connect to Kafka and create producer"""
         try:
-            # Create Kafka producer
             self.kafka_producer = KafkaProducer(
                 bootstrap_servers=self.kafka_bootstrap_servers,
                 value_serializer=lambda v: json.dumps(v).encode('utf-8'),
@@ -104,7 +92,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
             self.kafka_producer = None
 
     def _start_kafka_consumer_thread(self):
-        """Start thread to consume commands from Kafka"""
         if not self.kafka_producer:
             logger.warning("Kafka not available, skipping command consumer")
             return
@@ -117,7 +104,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
         logger.info("✓ Started Kafka command consumer thread")
 
     def _consume_kafka_commands(self):
-        """Consume commands from Kafka and queue them for agents"""
         try:
             consumer = KafkaConsumer(
                 self.kafka_topics['commands'],
@@ -135,7 +121,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
                     command_data = message.value
                     logger.info(f"📥 Received command from Kafka: {command_data}")
 
-                    # Create gRPC command
                     command = monitoring_pb2.Command(
                         command_id=command_data.get('command_id', f"cmd_{int(time.time())}"),
                         command_type=command_data.get('command_type', ''),
@@ -143,7 +128,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
                         timestamp=command_data.get('timestamp', int(time.time()))
                     )
 
-                    # Queue command for target agent
                     target = command_data.get('target', 'all')
 
                     with self.lock:
@@ -165,7 +149,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
             logger.error(f"Kafka consumer error: {e}")
 
     def _send_to_kafka(self, topic: str, data: dict):
-        """Send data to Kafka topic"""
         if not self.kafka_producer:
             return
 
@@ -250,7 +233,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
             print("="*80)
 
     def _start_command_input(self):
-        """Start command input thread"""
         command_thread = threading.Thread(target=self._command_input_loop, daemon=True)
         command_thread.start()
 
@@ -288,7 +270,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
                 logger.error(f"Error processing command: {e}")
 
     def _show_help(self):
-        """Display available commands"""
         print("\n" + "="*70)
         print("Available Commands:")
         print("="*70)
@@ -303,7 +284,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
         print("="*70)
 
     def _list_clients(self):
-        """List all connected gRPC clients"""
         with self.lock:
             if not self.clients:
                 print("\n📋 No gRPC clients connected.")
@@ -320,7 +300,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
             print("="*60)
 
     def _show_stats(self):
-        """Show monitoring statistics"""
         with self.lock:
             if not self.client_data:
                 print("\n📊 No monitoring data collected yet.")
@@ -427,7 +406,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
                             }
                         logger.info(f"✓ gRPC Client connected: {client_id} ({hostname})")
 
-                    # Store monitoring data
                     timestamp = datetime.fromtimestamp(monitoring_data.timestamp)
                     with self.lock:
                         self.client_data[client_id].append({
@@ -439,7 +417,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
                         if client_id in self.clients:
                             self.clients[client_id]['last_seen'] = datetime.now()
 
-                    # Write to result.txt
                     log_entry = (f"[{timestamp.strftime('%Y-%m-%d %H:%M:%S')}] "
                                f"Client: {client_id} | "
                                f"Hostname: {monitoring_data.hostname} | "
@@ -449,7 +426,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
                     with open(self.result_file, 'a') as f:
                         f.write(log_entry)
 
-                    # Forward to Kafka
                     kafka_data = {
                         'timestamp': monitoring_data.timestamp,
                         'client_id': client_id,
@@ -459,7 +435,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
                     }
                     self._send_to_kafka(self.kafka_topics['data'], kafka_data)
 
-                    # Check for pending commands
                     with self.lock:
                         if client_id in self.command_queue and self.command_queue[client_id]:
                             command = self.command_queue[client_id].pop(0)
@@ -525,3 +500,4 @@ if __name__ == '__main__':
         kafka_servers = sys.argv[3]
 
     serve(port=port, etcd_host=etcd_host, etcd_port=etcd_port, kafka_servers=kafka_servers)
+
