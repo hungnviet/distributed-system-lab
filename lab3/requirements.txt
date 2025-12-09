@@ -1,4 +1,5 @@
-grpcio==1.60.0
-grpcio-tools==1.60.0
+grpcio==1.47.5
+grpcio-tools==1.47.5
+protobuf==3.20.3
 psutil==5.9.6
 etcd3==0.12.0
