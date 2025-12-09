@@ -146,7 +146,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
             print("="*80)
 
     def _start_command_input(self):
-        """Start command input thread"""
         command_thread = threading.Thread(target=self._command_input_loop, daemon=True)
         command_thread.start()
 
@@ -199,7 +198,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
         print("="*70)
 
     def _list_clients(self):
-        """List all connected gRPC clients"""
         with self.lock:
             if not self.clients:
                 print("\n📋 No gRPC clients connected.")
@@ -216,7 +214,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
             print("="*60)
 
     def _show_stats(self):
-        """Show monitoring statistics"""
         with self.lock:
             if not self.client_data:
                 print("\n📊 No monitoring data collected yet.")
@@ -314,7 +311,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
             nonlocal client_id
 
             try:
-                # Process incoming monitoring data
                 for monitoring_data in request_iterator:
                     if client_id is None:
                         client_id = monitoring_data.client_id
@@ -327,7 +323,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
                             }
                         logger.info(f"✓ gRPC Client connected: {client_id} ({hostname})")
 
-                    # Store monitoring data
                     timestamp = datetime.fromtimestamp(monitoring_data.timestamp)
                     with self.lock:
                         self.client_data[client_id].append({
@@ -336,11 +331,9 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
                             'metric': monitoring_data.metric,
                             'value': monitoring_data.value
                         })
-                        # Update last seen time
                         if client_id in self.clients:
                             self.clients[client_id]['last_seen'] = datetime.now()
 
-                    # Write to result.txt file
                     log_entry = (f"[{timestamp.strftime('%Y-%m-%d %H:%M:%S')}] "
                                f"Client: {client_id} | "
                                f"Hostname: {monitoring_data.hostname} | "
@@ -350,7 +343,6 @@ class MonitoringServer(monitoring_pb2_grpc.MonitoringServiceServicer):
                     with open(self.result_file, 'a') as f:
                         f.write(log_entry)
 
-                    # Check if there are commands waiting for this client
                     with self.lock:
                         if client_id in self.command_queue and self.command_queue[client_id]:
                             command = self.command_queue[client_id].pop(0)

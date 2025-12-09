@@ -38,7 +38,8 @@ Server> config $(hostname) '{"interval": 5, "metrics": ["net in", "net out"]}'
 Server> config $(hostname) '{"interval": 10, "metrics": ["disk read", "disk write"]}'
 ```
 
----
+config MiWiFi-R3-srv {"interval": 5, "metrics": ["cpu"]}
+config MacBook-Pro-2.local {"interval": 3, "metrics": ["net in", "net out"]}
 
 ## 🐳 etcd Commands
 
