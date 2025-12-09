@@ -1,0 +1,572 @@
+import grpc
+import time
+import platform
+import psutil
+import json
+import logging
+import threading
+import sys
+import importlib
+from datetime import datetime
+from typing import Dict, List, Any
+
+# Import etcd client
+import etcd3
+import etcd3.events
+
+# Add parent directory to path for imports
+sys.path.insert(0, '..')
+
+# Import generated protobuf classes
+import monitoring_pb2
+import monitoring_pb2_grpc
+
+# Import plugin base
+from plugins.base import BasePlugin
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+class RWLock:
+    """Read-Write Lock for thread-safe configuration access"""
+    def __init__(self):
+        self._readers = 0
+        self._writers = 0
+        self._read_ready = threading.Condition(threading.RLock())
+        self._write_ready = threading.Condition(threading.RLock())
+
+    def acquire_read(self):
+        self._read_ready.acquire()
+        try:
+            while self._writers > 0:
+                self._read_ready.wait()
+            self._readers += 1
+        finally:
+            self._read_ready.release()
+
+    def release_read(self):
+        self._read_ready.acquire()
+        try:
+            self._readers -= 1
+            if self._readers == 0:
+                self._read_ready.notifyAll()
+        finally:
+            self._read_ready.release()
+
+    def acquire_write(self):
+        self._write_ready.acquire()
+        self._writers += 1
+        self._write_ready.release()
+
+        self._read_ready.acquire()
+        while self._readers > 0:
+            self._read_ready.wait()
+
+    def release_write(self):
+        self._writers -= 1
+        self._read_ready.notifyAll()
+        self._read_ready.release()
+        self._write_ready.acquire()
+        self._write_ready.notifyAll()
+        self._write_ready.release()
+
+
+class PluginManager:
+    """Manages dynamic loading and execution of plugins"""
+
+    def __init__(self):
+        self.plugins = []
+        self.plugin_configs = {}
+
+    def load_plugins(self, plugin_list: List[str], plugin_configs: Dict[str, Any] = None):
+        """
+        Load plugins from configuration
+        Args:
+            plugin_list: List of plugin class paths (e.g., ["plugins.duplicate_filter.DuplicateFilterPlugin"])
+            plugin_configs: Dictionary of plugin-specific configurations
+        """
+        # Finalize existing plugins
+        self.finalize_all()
+        self.plugins = []
+
+        self.plugin_configs = plugin_configs or {}
+
+        for cls_path in plugin_list:
+            try:
+                plugin_cls = self._resolve_class(cls_path)
+                if plugin_cls:
+                    plugin = plugin_cls()
+
+                    # Get plugin-specific config
+                    plugin_name = plugin_cls.__name__
+                    plugin_config = self.plugin_configs.get(plugin_name, {})
+
+                    plugin.initialize(plugin_config)
+                    self.plugins.append(plugin)
+                    logger.info(f"✓ Loaded plugin: {plugin_name}")
+                else:
+                    logger.error(f"Failed to resolve plugin: {cls_path}")
+            except Exception as e:
+                logger.error(f"Error loading plugin {cls_path}: {e}")
+
+    def _resolve_class(self, cls_path: str):
+        """
+        Resolve plugin class from module path
+        Args:
+            cls_path: Full class path (e.g., "plugins.duplicate_filter.DuplicateFilterPlugin")
+        Returns:
+            Plugin class or None
+        """
+        try:
+            module_name, class_name = cls_path.rsplit(".", 1)
+            module = importlib.import_module(module_name)
+            return getattr(module, class_name, None)
+        except Exception as e:
+            logger.error(f"Error resolving class {cls_path}: {e}")
+            return None
+
+    def execute(self, data: Any) -> Any:
+        """
+        Execute all loaded plugins in sequence
+        Args:
+            data: Input data to process
+        Returns:
+            Processed data after all plugins
+        """
+        result = data
+        for plugin in self.plugins:
+            try:
+                result = plugin.run(result)
+            except Exception as e:
+                logger.error(f"Error executing plugin {plugin.name}: {e}")
+        return result
+
+    def finalize_all(self):
+        """Finalize all plugins"""
+        for plugin in self.plugins:
+            try:
+                plugin.finalize()
+            except Exception as e:
+                logger.error(f"Error finalizing plugin {plugin.name}: {e}")
+
+
+class MonitoringAgent:
+    def __init__(self,
+                 server_address='localhost:50052',
+                 client_id=None,
+                 etcd_host='localhost',
+                 etcd_port=2379,
+                 lease_ttl=10):
+
+        self.server_address = server_address
+        self.hostname = platform.node()
+        self.client_id = client_id or f"{self.hostname}-{int(time.time())}"
+
+        self.etcd_host = etcd_host
+        self.etcd_port = etcd_port
+        self.lease_ttl = lease_ttl
+
+        # Default configuration
+        self.config = {
+            'interval': 5,
+            'metrics': ['cpu', 'memory', 'disk', 'network'],
+            'plugins': []  # Plugin configuration
+        }
+        self.config_lock = RWLock()
+
+        # Plugin manager
+        self.plugin_manager = PluginManager()
+
+        self.running = True
+        self.etcd = None
+        self.heartbeat_thread = None
+        self.config_watch_id = None
+
+        self.last_disk_io = None
+        self.last_net_io = None
+        self.last_io_time = None
+
+        logger.info(f"Initializing agent: {self.client_id}")
+        logger.info(f"Hostname: {self.hostname}")
+        logger.info(f"Server: {self.server_address}")
+        logger.info(f"etcd: {self.etcd_host}:{self.etcd_port}")
+
+    def connect_etcd(self):
+        try:
+            self.etcd = etcd3.client(host=self.etcd_host, port=self.etcd_port)
+            logger.info("✓ Connected to etcd")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to connect to etcd: {e}")
+            return False
+
+    def get_config(self) -> Dict[str, Any]:
+        self.config_lock.acquire_read()
+        try:
+            return self.config.copy()
+        finally:
+            self.config_lock.release_read()
+
+    def update_config(self, new_config: Dict[str, Any]):
+        self.config_lock.acquire_write()
+        try:
+            old_plugins = self.config.get('plugins', [])
+            old_plugin_configs = self.config.get('plugin_configs', {})
+            new_plugins = new_config.get('plugins', [])
+            new_plugin_configs = new_config.get('plugin_configs', {})
+
+            self.config = new_config
+            logger.info(f"✓ Configuration updated: {self.config}")
+
+            # Reload plugins if plugin list OR plugin configs changed
+            if old_plugins != new_plugins or old_plugin_configs != new_plugin_configs:
+                logger.info("🔌 Plugin configuration changed, reloading plugins...")
+                self.plugin_manager.load_plugins(new_plugins, new_plugin_configs)
+
+        finally:
+            self.config_lock.release_write()
+
+    def send_heartbeat(self):
+        heartbeat_key = f"/monitor/heartbeat/{self.hostname}"
+        lease = self.etcd.lease(self.lease_ttl)
+
+        logger.info(f"Heartbeat lease created with TTL {self.lease_ttl}s, ID: {lease.id}")
+
+        try:
+            while self.running:
+                try:
+                    data = json.dumps({
+                        "status": "alive",
+                        "ts": time.time(),
+                        "client_id": self.client_id
+                    })
+
+                    self.etcd.put(heartbeat_key, data, lease=lease)
+                    logger.debug(f"Heartbeat sent to {heartbeat_key}")
+
+                    lease.refresh()
+                    time.sleep(self.lease_ttl / 2)
+
+                except Exception as e:
+                    logger.error(f"Error sending heartbeat: {e}")
+                    time.sleep(1)
+
+        except KeyboardInterrupt:
+            pass
+        finally:
+            logger.info("Stopping heartbeat...")
+            try:
+                lease.revoke()
+            except:
+                pass
+
+    def watch_config(self, watch_response):
+        for event in watch_response.events:
+            if isinstance(event, etcd3.events.PutEvent):
+                try:
+                    new_config = json.loads(event.value.decode('utf-8'))
+                    logger.info(f"⚙️  Config change detected: {new_config}")
+                    self.update_config(new_config)
+                except Exception as e:
+                    logger.error(f"Error parsing config: {e}")
+
+    def load_and_watch_config(self):
+        config_key = f"/monitor/config/{self.hostname}"
+
+        try:
+            # Load initial configuration
+            value, _ = self.etcd.get(config_key)
+            if value:
+                initial_config = json.loads(value.decode('utf-8'))
+                self.update_config(initial_config)
+                logger.info(f"✓ Loaded initial config from etcd: {initial_config}")
+            else:
+                # Put default config to etcd if not exists
+                default_config = self.get_config()
+                self.etcd.put(config_key, json.dumps(default_config))
+                logger.info(f"✓ Created default config in etcd: {default_config}")
+
+            # Watch for configuration changes
+            self.config_watch_id = self.etcd.add_watch_callback(
+                config_key,
+                self.watch_config
+            )
+            logger.info(f"✓ Watching config key: {config_key}")
+
+        except Exception as e:
+            logger.error(f"Error loading config from etcd: {e}")
+
+    def collect_metrics(self) -> List[monitoring_pb2.MonitoringData]:
+        config = self.get_config()
+        metrics_to_collect = config.get('metrics', ['cpu', 'memory'])
+
+        metrics = []
+        timestamp = int(time.time())
+
+        for metric_name in metrics_to_collect:
+            metric_name = metric_name.lower().strip()
+
+            try:
+                if metric_name == 'cpu':
+                    value = psutil.cpu_percent(interval=0.1)
+                    metrics.append(self._create_metric('cpu', value, timestamp))
+
+                elif metric_name == 'memory':
+                    memory = psutil.virtual_memory()
+                    metrics.append(self._create_metric('memory', memory.percent, timestamp))
+
+                elif metric_name == 'disk':
+                    disk = psutil.disk_usage('/')
+                    metrics.append(self._create_metric('disk', disk.percent, timestamp))
+
+                elif metric_name in ['disk read', 'disk write']:
+                    disk_metrics = self._get_disk_io_rate()
+                    if disk_metrics:
+                        if metric_name == 'disk read':
+                            metrics.append(self._create_metric('disk_read', disk_metrics['read'], timestamp))
+                        else:
+                            metrics.append(self._create_metric('disk_write', disk_metrics['write'], timestamp))
+
+                elif metric_name in ['net in', 'net out', 'network']:
+                    net_metrics = self._get_network_io_rate()
+                    if net_metrics:
+                        if metric_name == 'net in':
+                            metrics.append(self._create_metric('net_in', net_metrics['in'], timestamp))
+                        elif metric_name == 'net out':
+                            metrics.append(self._create_metric('net_out', net_metrics['out'], timestamp))
+                        else:  # 'network'
+                            metrics.append(self._create_metric('net_in', net_metrics['in'], timestamp))
+                            metrics.append(self._create_metric('net_out', net_metrics['out'], timestamp))
+
+            except Exception as e:
+                logger.error(f"Error collecting metric '{metric_name}': {e}")
+
+        return metrics
+
+    def _create_metric(self, metric_name: str, value: float, timestamp: int):
+        return monitoring_pb2.MonitoringData(
+            timestamp=timestamp,
+            hostname=self.hostname,
+            metric=metric_name,
+            value=value,
+            client_id=self.client_id
+        )
+
+    def _get_disk_io_rate(self) -> Dict[str, float]:
+        try:
+            current_io = psutil.disk_io_counters()
+            current_time = time.time()
+
+            if self.last_disk_io and self.last_io_time:
+                time_delta = current_time - self.last_io_time
+                read_rate = (current_io.read_bytes - self.last_disk_io.read_bytes) / time_delta
+                write_rate = (current_io.write_bytes - self.last_disk_io.write_bytes) / time_delta
+
+                self.last_disk_io = current_io
+                self.last_io_time = current_time
+
+                return {
+                    'read': read_rate / (1024 * 1024),
+                    'write': write_rate / (1024 * 1024)
+                }
+            else:
+                self.last_disk_io = current_io
+                self.last_io_time = current_time
+                return None
+        except Exception as e:
+            logger.error(f"Error getting disk I/O: {e}")
+            return None
+
+    def _get_network_io_rate(self) -> Dict[str, float]:
+        try:
+            current_io = psutil.net_io_counters()
+            current_time = time.time()
+
+            if self.last_net_io and self.last_io_time:
+                time_delta = current_time - self.last_io_time
+                in_rate = (current_io.bytes_recv - self.last_net_io.bytes_recv) / time_delta
+                out_rate = (current_io.bytes_sent - self.last_net_io.bytes_sent) / time_delta
+
+                self.last_net_io = current_io
+
+                return {
+                    'in': in_rate / (1024 * 1024),
+                    'out': out_rate / (1024 * 1024)
+                }
+            else:
+                self.last_net_io = current_io
+                if not self.last_io_time:
+                    self.last_io_time = current_time
+                return None
+        except Exception as e:
+            logger.error(f"Error getting network I/O: {e}")
+            return None
+
+    def execute_command(self, command):
+        logger.info(f"📥 Received command: {command.command_type}")
+
+        try:
+            if command.command_type == 'status':
+                output = self._get_status()
+                logger.info(f"✓ Status check completed")
+                return True, output
+
+            elif command.command_type == 'get_config':
+                config = self.get_config()
+                output = f"Current config: {json.dumps(config, indent=2)}"
+                logger.info(f"✓ Config check completed")
+                return True, output
+
+            else:
+                logger.warning(f"Unknown command type: {command.command_type}")
+                return False, f"Unknown command: {command.command_type}"
+
+        except Exception as e:
+            logger.error(f"Error executing command: {e}")
+            return False, str(e)
+
+    def _get_status(self):
+        """Get system status"""
+        config = self.get_config()
+        cpu = psutil.cpu_percent(interval=0.5)
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+
+        status = f"""
+System Status for {self.hostname}:
+  CPU Usage: {cpu}%
+  Memory Usage: {memory.percent}%
+  Disk Usage: {disk.percent}%
+  Platform: {platform.platform()}
+  Config: interval={config.get('interval')}s, metrics={config.get('metrics')}
+  Plugins: {len(self.plugin_manager.plugins)} loaded
+"""
+        return status.strip()
+
+    def generate_monitoring_stream(self, response_iterator):
+        """Generator that yields monitoring data periodically"""
+        while self.running:
+            try:
+                config = self.get_config()
+                interval = config.get('interval', 5)
+
+                # Collect metrics
+                metrics = self.collect_metrics()
+
+                # Apply plugins to metrics
+                processed_metrics = self.plugin_manager.execute(metrics)
+
+                # Send processed metrics
+                if processed_metrics:
+                    for metric in processed_metrics:
+                        yield metric
+                        logger.info(f"📤 Sent: {metric.metric} = {metric.value:.2f}")
+
+                time.sleep(interval)
+
+            except Exception as e:
+                logger.error(f"Error in monitoring stream: {e}")
+                time.sleep(1)
+
+    def start(self):
+        if not self.connect_etcd():
+            logger.error("Cannot start without etcd connection")
+            return
+
+        self.load_and_watch_config()
+
+        self.heartbeat_thread = threading.Thread(
+            target=self.send_heartbeat,
+            daemon=True
+        )
+        self.heartbeat_thread.start()
+        logger.info("✓ Heartbeat thread started")
+
+        logger.info(f"Connecting to gRPC server at {self.server_address}...")
+
+        try:
+            channel = grpc.insecure_channel(self.server_address)
+            stub = monitoring_pb2_grpc.MonitoringServiceStub(channel)
+
+            config = self.get_config()
+
+            print("\n" + "="*60)
+            print(f"  Lab 4 Monitoring Agent (Plugin-Enabled) - {self.client_id}")
+            print("="*60)
+            print(f"  Hostname: {self.hostname}")
+            print(f"  Server: {self.server_address}")
+            print(f"  etcd: {self.etcd_host}:{self.etcd_port}")
+            print(f"  Config: interval={config.get('interval')}s")
+            print(f"  Metrics: {', '.join(config.get('metrics', []))}")
+            print(f"  Plugins: {len(self.plugin_manager.plugins)} loaded")
+            print(f"  Status: Active - Config updates in real-time from etcd")
+            print("="*60)
+            print("\nPress Ctrl+C to stop\n")
+
+            # Start bidirectional streaming
+            response_iterator = stub.MonitorStream(
+                self.generate_monitoring_stream(None)
+            )
+
+            # Listen for commands from server
+            for command in response_iterator:
+                success, output = self.execute_command(command)
+                logger.info(f"Command output: {output}")
+
+        except grpc.RpcError as e:
+            logger.error(f"gRPC error: {e.code()} - {e.details()}")
+        except KeyboardInterrupt:
+            logger.info("\nStopping agent...")
+            self.running = False
+        except Exception as e:
+            logger.error(f"Unexpected error: {e}")
+        finally:
+            self.cleanup()
+
+    def cleanup(self):
+        self.running = False
+
+        # Finalize plugins
+        self.plugin_manager.finalize_all()
+
+        if self.config_watch_id and self.etcd:
+            try:
+                self.etcd.cancel_watch(self.config_watch_id)
+            except:
+                pass
+
+        if self.heartbeat_thread and self.heartbeat_thread.is_alive():
+            self.heartbeat_thread.join(timeout=2)
+
+        logger.info("Agent stopped")
+
+
+def main():
+    server_address = 'localhost:50052'
+    client_id = None
+    etcd_host = 'localhost'
+    etcd_port = 2379
+
+    if len(sys.argv) > 1:
+        server_address = sys.argv[1]
+    if len(sys.argv) > 2:
+        client_id = sys.argv[2]
+    if len(sys.argv) > 3:
+        etcd_host = sys.argv[3]
+
+    agent = MonitoringAgent(
+        server_address=server_address,
+        client_id=client_id,
+        etcd_host=etcd_host,
+        etcd_port=etcd_port
+    )
+    agent.start()
+
+
+if __name__ == '__main__':
+    main()

@@ -26,16 +26,16 @@ Server> quit                       # Shutdown
 
 ```bash
 # Fast monitoring - all metrics
-Server> config $(hostname) '{"interval": 2, "metrics": ["cpu", "memory", "disk", "network"]}'
+Server> config $(hostname) {"interval": 2, "metrics": ["cpu", "memory", "disk", "network"]}
 
 # Slow monitoring - minimal
-Server> config $(hostname) '{"interval": 30, "metrics": ["cpu"]}'
+Server> config $(hostname) {"interval": 30, "metrics": ["cpu"]}
 
 # Network focused
-Server> config $(hostname) '{"interval": 5, "metrics": ["net in", "net out"]}'
+Server> config $(hostname) {"interval": 5, "metrics": ["net in", "net out"]}
 
 # Disk I/O monitoring
-Server> config $(hostname) '{"interval": 10, "metrics": ["disk read", "disk write"]}'
+Server> config $(hostname) {"interval": 10, "metrics": ["disk read", "disk write"]}
 ```
 
 config MiWiFi-R3-srv {"interval": 5, "metrics": ["cpu"]}

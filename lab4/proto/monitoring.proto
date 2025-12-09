@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package monitoring;
+
+// Monitoring service with bidirectional streaming
+service MonitoringService {
+  // Bidirectional streaming: clients send monitoring data and receive commands
+  rpc MonitorStream (stream MonitoringData) returns (stream Command) {}
+}
+
+// Monitoring data structure: (time, hostname, metric, value)
+message MonitoringData {
+  int64 timestamp = 1;        // Unix timestamp
+  string hostname = 2;        // Client hostname
+  string metric = 3;          // Metric name (cpu, memory, disk, etc.)
+  double value = 4;           // Metric value
+  string client_id = 5;       // Unique client identifier
+}
+
+// Command structure sent from server to client
+message Command {
+  string command_id = 1;      // Unique command identifier
+  string command_type = 2;    // Command type (execute, status, shutdown, etc.)
+  string command_data = 3;    // Command payload/parameters
+  int64 timestamp = 4;        // When command was issued
+}
+
+// Command response from client to server
+message CommandResponse {
+  string command_id = 1;      // Reference to original command
+  bool success = 2;           // Execution status
+  string output = 3;          // Command output or error message
+  int64 timestamp = 4;        // When response was sent
+  string client_id = 5;       // Client identifier
+}

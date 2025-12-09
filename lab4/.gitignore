@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Generated files
+proto/*_pb2.py
+proto/*_pb2_grpc.py
+agent/*_pb2.py
+agent/*_pb2_grpc.py
+server/*_pb2.py
+server/*_pb2_grpc.py
+
+# Results
+server/result.txt
+
+# macOS
+.DS_Store
+
+# Docker
+.docker/
